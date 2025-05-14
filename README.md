@@ -1,4 +1,4 @@
-# Agent Pychrome
+# Agent 47
 
 An AI-powered agent that leverages `pychrome` to interact with web pages based on instructions from a Large Language Model (LLM). It can navigate websites, fill out forms, click elements, and save page content, all driven by natural language tasks.
 
