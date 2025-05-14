@@ -35,7 +35,9 @@ async def main():
     # --- Configuration ---
     CDP_URL = "http://localhost:9222" # Default Chrome Debugging Protocol URL
     # TASK = "Go to perplexity.ai, search for 'latest news on LLMs', and report the main findings."
-    TASK = "go to website = https://hackinglife.mitpress.mit.edu/   find chapter 7  open the seventh chapter and save it as pdf "
+    # TASK = "go to website = https://hackinglife.mitpress.mit.edu/   find chapter 7  open the seventh chapter and save it as pdf "
+    TASK = "Go to codeforces.com, click on enter then click on button 'Click the button to complete verification',then click on login  ."
+    
     # TASK = "Go to perplexity.ai and find new findings on india pakistan war'."
     MAX_STEPS = 15
     # --- End Configuration ---
