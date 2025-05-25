@@ -92,6 +92,13 @@ class ClickElementActionArgs(BaseModel):
 class SavePageAsPDFActionArgs(BaseModel):
 	output_path: str = Field(default="web_page.pdf", description="The file path where the PDF should be saved. Defaults to 'web_page.pdf' in the agent's working directory if not specified.")
 
+class CopyTextActionArgs(BaseModel):
+	selector: ElementSelector = Field(..., description="Selector for the element whose text content needs to be copied to the internal clipboard.")
+
+class PasteTextActionArgs(BaseModel):
+	selector: ElementSelector = Field(..., description="Selector for the input field where the text from the internal clipboard should be pasted.")
+	press_enter: Optional[bool] = Field(default=False, description="Whether to press Enter after pasting the text. Defaults to False.")
+
 class DoneActionArgs(BaseModel):
 	success: bool = Field(..., description="Whether the overall task was completed successfully.")
 	conclusion: str = Field(..., description="A summary of the task outcome or findings.")
@@ -112,16 +119,37 @@ class PychromeSavePageAsPDFAction(BaseModel):
 	action_type: Literal["save_page_as_pdf"] = "save_page_as_pdf"
 	args: SavePageAsPDFActionArgs
 
+class PychromeCopyTextAction(BaseModel):
+	action_type: Literal["copy_text"] = "copy_text"
+	args: CopyTextActionArgs
+
+class PychromePasteTextAction(BaseModel):
+	action_type: Literal["paste_text"] = "paste_text"
+	args: PasteTextActionArgs
+
 class PychromeDoneAction(BaseModel):
 	action_type: Literal["done"] = "done"
 	args: DoneActionArgs
+
+# --- New Action Model for File Upload ---
+class UploadFileActionArgs(BaseModel):
+	selector: ElementSelector = Field(..., description="Selector for the file input field (<input type=\"file\">).")
+	file_paths: List[str] = Field(..., description="A list of absolute paths to the files to upload.")
+
+class PychromeUploadFileAction(BaseModel):
+	action_type: Literal["upload_file"] = "upload_file"
+	args: UploadFileActionArgs
+# --- End New Action Model ---
 
 PychromeActionModel = Union[
 	PychromeNavigateAction,
 	PychromeTypeTextAction,
 	PychromeClickElementAction,
 	PychromeSavePageAsPDFAction,
+	PychromeCopyTextAction,
+	PychromePasteTextAction,
 	PychromeDoneAction,
+	PychromeUploadFileAction,
 ]
 # --- End Pychrome Specific Action Models ---
 
