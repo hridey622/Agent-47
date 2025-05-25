@@ -27,18 +27,19 @@ try:
 except ImportError:
     print("Please install langchain-openai: pip install langchain-openai")
     exit()
-
+from agent_pychrome import chrome_controller
 from agent_pychrome.agent_service import PychromeAgent
 from agent_pychrome.agent_views import AgentSettings
 
 async def main():
     # --- Configuration ---
     CDP_URL = "http://localhost:9222" # Default Chrome Debugging Protocol URL
-    TASK = "Go to perplexity.ai, search for 'latest news on LLMs', and report the main findings."
+    # TASK = "Go to perplexity.ai, search for 'latest news on LLMs', and report the main findings."
     # TASK = "go to website = https://hackinglife.mitpress.mit.edu/   find chapter 7  open the seventh chapter and save it as pdf "
     # TASK = "Go to codeforces.com, click on enter then click on button 'Click the button to complete verification',then click on login  ."
-    
-    # TASK = "Go to perplexity.ai and find new findings on india pakistan war'."
+    # TASK = 'in the google sheets , in the first column write the first 10 fibonacci numbers, and in the next row after the 10th fibbonacci number find their sum using formula for sum'
+    # TASK = 'Go to claude.ai and search for "how to build drones" then copy the result and paste it on the chatbar in notebooklm after opening one of the notebooks'
+    TASK = 'on the swiggy website add a mcveggie burger to cart from mcdonalds'
     MAX_STEPS = 15
     # --- End Configuration ---
     time.sleep(4)
@@ -59,7 +60,7 @@ async def main():
         max_input_tokens=120000, # Adjust based on model
         max_actions_per_step=5, # Limit actions LLM can take in one step
         use_vision=True, # Set to False if your LLM doesn't support vision or you don't want screenshots
-        max_failures=3
+        max_failures=15
         # Add other settings from agent_views.AgentSettings if needed
     )
 
@@ -99,6 +100,9 @@ async def main():
             await agent.disconnect_browser()
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
+
+    # Generate automation script
+    agent.chrome_controller.generate_automation_script(output_file_path="automated_task.py")
 
 if __name__ == "__main__":
     try:
