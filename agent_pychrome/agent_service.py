@@ -33,6 +33,7 @@ from .chrome_controller import (
     create_aria_label_criteria, create_name_criteria,
     create_node_type_criteria # Added import
 )
+from .performance_tracker import PerformanceTracker  # Add this import
 # from .message_manager.message_manager_views import MessageManagerState # MessageManagerState is part of AgentState
 # from .prompts import AgentMessagePrompt, PlannerPrompt, SystemPrompt # To be added later
 # from .memory.service import Memory, MemorySettings # To be added later
@@ -52,15 +53,19 @@ class PychromeAgent:
         self.llm = llm
         self.settings = agent_settings or AgentSettings()
         self.state = initial_agent_state or AgentState()
+        self.performance_tracker = PerformanceTracker()  # Add this line
 
         self.chrome_controller = pychrome_utils.ChromeController(cdp_url=cdp_url)
+        self.clipboard_content: Optional[str] = None # Internal clipboard
 
         _system_message_content = (
             "You are a helpful AI assistant that interacts with a Chrome browser via a structured API. "
             "Based on the user's task and the current state of the browser, you will decide on the next action to take. "
-            "Your available actions are: navigate, type_text, click_element, save_page_as_pdf, and done. "
+            "Your available actions are: navigate, type_text, click_element, save_page_as_pdf, copy_text, paste_text, and done. "
             "For type_text, you can optionally specify 'press_enter: true' to simulate pressing Enter after typing (e.g., for submitting a search)."
             "For save_page_as_pdf, you can optionally specify 'output_path', otherwise it defaults to 'web_page.pdf'."
+            "The 'copy_text' action takes a selector and copies the text content of the specified element to an internal clipboard. "
+            "The 'paste_text' action takes a selector and pastes the content from the internal clipboard into the specified input element. It also has an optional 'press_enter: true' argument."
             "Ensure your response strictly follows the Pydantic schema provided for AgentOutput."
         )
         _system_prompt_obj = SystemMessage(content=_system_message_content)
@@ -181,9 +186,6 @@ class PychromeAgent:
                     # --- END OF HARDCODED FALLBACK LOGIC ---
                 return action_result # type: ignore
 
-            # ... other action types (navigate, click_element, done) ...
-            # Ensure these return ActionResult as well
-
             elif action.action_type == "click_element":
                 criteria_func = self._create_criteria_func_from_selector(action.args.selector)
                 description=f"element for click (selector: {action.args.selector.strategy}='{action.args.selector.value}')"
@@ -223,6 +225,88 @@ class PychromeAgent:
                     return ActionResult(extracted_content=f"Successfully saved page as PDF to {output_path}")
                 else:
                     return ActionResult(error=f"Failed to save page as PDF to {output_path}")
+            
+            elif action.action_type == "copy_text":
+                criteria_func = self._create_criteria_func_from_selector(action.args.selector)
+                description = f"element for text copying (selector: {action.args.selector.strategy}='{action.args.selector.value}')"
+                # Note: get_element_text in controller is now async
+                text_content = await self.chrome_controller.get_element_text(criteria_func, description=description)
+                if text_content is not None:
+                    self.clipboard_content = text_content
+                    logger.info(f"Copied to internal clipboard: '{text_content[:100]}...'")
+                    return ActionResult(extracted_content=f"Copied text from {description} to internal clipboard: '{text_content[:100]}...'")
+                else:
+                    logger.warning(f"Failed to get text from {description} for copying.")
+                    return ActionResult(error=f"Failed to copy text from {description}.")
+            
+            elif action.action_type == "paste_text":
+                if self.clipboard_content is None:
+                    logger.warning("Paste action called but internal clipboard is empty.")
+                    return ActionResult(error="Cannot paste: internal clipboard is empty.")
+                
+                criteria_func = self._create_criteria_func_from_selector(action.args.selector)
+                description = f"input field for pasting (selector: {action.args.selector.strategy}='{action.args.selector.value}')"
+                press_enter = action.args.press_enter if hasattr(action.args, 'press_enter') and action.args.press_enter is not None else False
+                
+                logger.info(f"Attempting to paste from internal clipboard: '{self.clipboard_content[:100]}...' into {description}")
+                success = await asyncio.to_thread(
+                    self.chrome_controller._find_and_type_pychrome, # Reusing for typing
+                    criteria_func,
+                    self.clipboard_content, # Text to type is from clipboard
+                    description=description,
+                    press_enter_after=press_enter
+                )
+                if success:
+                    action_result_text = f"Pasted text from internal clipboard into {description}: '{self.clipboard_content[:100]}...'"
+                    if press_enter:
+                        action_result_text += " Then pressed Enter."
+                    return ActionResult(extracted_content=action_result_text)
+                else:
+                    return ActionResult(error=f"Failed to paste text into {description}.")
+            
+            # --- New Case for Upload File Action ---
+            elif action.action_type == "upload_file":
+                criteria_func = self._create_criteria_func_from_selector(action.args.selector)
+                description = f"file input field (selector: {action.args.selector.strategy}='{action.args.selector.value}')"
+                file_paths = action.args.file_paths
+
+                logger.info(f"Searching for {description} to upload files: {file_paths}...")
+                dom_root = self.chrome_controller.get_dom_root()
+                if not dom_root:
+                    logger.error(f"Failed to get DOM to find {description} for file upload.")
+                    return ActionResult(error=f"Failed to get DOM to find {description} for file upload.")
+
+                target_node = find_element_in_dom(dom_root, criteria_func)
+                if not target_node:
+                    logger.error(f"Could not find {description} for file upload.")
+                    return ActionResult(error=f"Could not find {description} for file upload.")
+
+                node_id = target_node.get('nodeId')
+                if node_id is None:
+                     logger.error(f"Found node for {description} but it has no nodeId. Cannot upload files.")
+                     return ActionResult(error=f"Found node for {description} but it has no nodeId. Cannot upload files.")
+                
+                # Optional: Add a check here to ensure the node is actually an <input type="file"> if needed
+                # You might need to get node attributes and check nodeName and type.
+                node_name = target_node.get('nodeName', '').upper()
+                attributes = target_node.get('attributes', [])
+                attr_dict = {attributes[i]: attributes[i+1] for i in range(0, len(attributes), 2)} # Convert attributes list to dict
+                
+                if not (node_name == 'INPUT' and attr_dict.get('type', '').lower() == 'file'):
+                     logger.warning(f"Found node for {description} (Node ID: {node_id}) but it does not appear to be an <input type=\"file\">. Node name: {node_name}, Type: {attr_dict.get('type')}")
+                     # Decide whether to fail or attempt upload anyway. Failing is safer.
+                     return ActionResult(error=f"Found node for {description} (Node ID: {node_id}) but it is not an <input type=\"file\">.")
+
+                success = await asyncio.to_thread(
+                    self.chrome_controller.upload_file,
+                    node_id,
+                    file_paths
+                )
+                if success:
+                    return ActionResult(extracted_content=f"Successfully uploaded files {file_paths} to {description}.")
+                else:
+                    return ActionResult(error=f"Failed to upload files {file_paths} to {description}.")
+            # --- End New Case ---
             
             else:
                 action_type_str = action.action_type if isinstance(action.action_type, str) else "unknown"
@@ -441,14 +525,47 @@ class PychromeAgent:
                 
         return results
 
-    async def step(self) -> bool: # Returns True if the agent is done, False otherwise
+    async def step(self) -> bool:
         """Executes one step of the agent's task."""
+        step_start_time = time.time()
         try:
             # Get current state
             state = await self.get_current_browser_state()
             if not state:
                 logger.error("Failed to get current state")
                 return True
+
+            # Add summary of previous step to message history if history exists
+            if self.state.history.history:
+                last_step = self.state.history.history[-1]
+                summary_parts = []
+                if last_step.model_output:
+                    action_types = [action.action_type for action in last_step.model_output.action]
+                    summary_parts.append(f"Previous actions: {', '.join(action_types)}.")
+
+                if last_step.result:
+                    successes = [r for r in last_step.result if r.success is True]
+                    failures = [r for r in last_step.result if r.error is not None]
+                    extracted = [r for r in last_step.result if r.extracted_content is not None]
+                    dones = [r for r in last_step.result if r.is_done is True]
+
+                    if successes:
+                        summary_parts.append(f"{len(successes)} action(s) succeeded.")
+                    if failures:
+                        error_messages = [r.error for r in failures if r.error]
+                        summary_parts.append(f"{len(failures)} action(s) failed: {', '.join(error_messages)}.")
+                    if extracted:
+                        extracted_contents = [r.extracted_content for r in extracted if r.extracted_content]
+                        summary_parts.append(f"Extracted content: {'; '.join([c[:100] + '...' if len(c) > 100 else c for c in extracted_contents])}.")
+                    if dones:
+                        done_conclusions = [r.extracted_content for r in dones if r.extracted_content]
+                        summary_parts.append(f"Task marked as done. Conclusion: {'; '.join(done_conclusions)}.")
+
+                if summary_parts:
+                    summary_message_content = "Outcome of the last step: " + " ".join(summary_parts)
+                    summary_human_message = HumanMessage(content=summary_message_content)
+                    self.message_manager._add_message_with_tokens(summary_human_message)
+                    logger.info(f"Added previous step summary to message history: {summary_message_content[:150]}...")
 
             # Prepare input messages for LLM
             input_messages = await self.prepare_input_messages(state)
@@ -486,10 +603,27 @@ class PychromeAgent:
                 metadata=None
             ))
 
+            # Record performance metrics for each action
+            for action, result in zip(llm_output.action, results):
+                self.performance_tracker.record_step(
+                    step_number=self.state.n_steps,
+                    action_type=action.action_type,
+                    action_args=action.args.model_dump(),
+                    success=result.success if result.success is not None else False,
+                    error_message=result.error,
+                    extracted_content=result.extracted_content,
+                    browser_state=state,
+                    execution_time=time.time() - step_start_time,
+                    tokens_used=self.message_manager.get_token_count()  # Get token count from message manager
+                )
+
             # Check if we're done
             is_done = any(result.is_done for result in results)
             if is_done:
                 logger.info("Agent completed its task")
+                # Save performance metrics when done
+                self.performance_tracker.save_to_json()
+                self.performance_tracker.save_to_csv()
                 return True
 
             # Reset consecutive failures on success
@@ -514,7 +648,6 @@ class PychromeAgent:
             connected = await self.connect_browser()
             if not connected:
                 logger.error("Agent run failed: Could not connect to browser.")
-                # Return history, potentially adding an error entry
                 self.state.history.history.append(AgentHistory(
                     model_output=None,
                     result=[ActionResult(error="Failed to connect to browser.")],
@@ -537,8 +670,27 @@ class PychromeAgent:
                     if self.state.consecutive_failures >= self.settings.max_failures:
                         logger.error(f"Too many consecutive failures ({self.state.consecutive_failures}), stopping agent.")
                         break
-                    await asyncio.sleep(1)  # Brief pause before retrying
+                    await asyncio.sleep(1)
                     continue
+
+            # Save performance metrics at the end of the run
+            self.performance_tracker.save_to_json()
+            self.performance_tracker.save_to_csv()
+            
+            # Log summary statistics
+            summary_stats = self.performance_tracker.get_summary_stats()
+            logger.info("Performance Summary:")
+            logger.info(json.dumps(summary_stats, indent=2))
+            
+            # Log action success matrix
+            action_matrix = self.performance_tracker.get_action_success_matrix()
+            logger.info("\nAction Success Matrix:")
+            logger.info(action_matrix.to_string())
+            
+            # Log error analysis
+            error_analysis = self.performance_tracker.get_error_analysis()
+            logger.info("\nError Analysis:")
+            logger.info(json.dumps(error_analysis, indent=2))
 
             return self.state.history
 
